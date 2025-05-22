@@ -46,4 +46,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Reports
     Route::get('/reports', [TimeLogController::class, 'report']);
+
+    // PDF Export
+    Route::get('/reports/pdf', [TimeLogController::class, 'exportPdf']);
 });
