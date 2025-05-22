@@ -137,6 +137,10 @@ The database comes seeded with:
 - Several projects
 - Sample time logs
 
+Default user login:
+- Email: admin@gmail.com
+- Password: password
+
 ## Repository
 
 GitHub: https://github.com/MokammelTanvir/Freelance-Time-Tracker-API
