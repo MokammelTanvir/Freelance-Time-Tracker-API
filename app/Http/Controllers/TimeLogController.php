@@ -4,11 +4,13 @@ namespace App\Http\Controllers;
 
 use App\Models\Project;
 use App\Models\TimeLog;
+use App\Notifications\DailyTimeExceededNotification;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Database\Eloquent\Builder;
+use Barryvdh\DomPDF\Facade\Pdf;
 
 class TimeLogController extends Controller
 {
@@ -93,6 +95,11 @@ class TimeLogController extends Controller
         }
 
         $timeLog = TimeLog::create($request->all());
+
+        // Check if daily hours exceed 8 hours
+        if ($timeLog->end_time) {
+            $this->checkAndNotifyDailyHoursExceeded($timeLog);
+        }
 
         return response()->json([
             'message' => 'Time log created successfully',
@@ -180,6 +187,9 @@ class TimeLogController extends Controller
         $timeLog->end_time = Carbon::now();
         $timeLog->save();
 
+        // Check if daily hours exceed 8 hours
+        $this->checkAndNotifyDailyHoursExceeded($timeLog);
+
         return response()->json([
             'message' => 'Time tracking stopped',
             'time_log' => $timeLog,
@@ -255,6 +265,11 @@ class TimeLogController extends Controller
         }
 
         $timeLog->update($request->all());
+
+        // Check if daily hours exceed 8 hours if end_time is present
+        if ($timeLog->end_time) {
+            $this->checkAndNotifyDailyHoursExceeded($timeLog);
+        }
 
         return response()->json([
             'message' => 'Time log updated successfully',
@@ -378,5 +393,109 @@ class TimeLogController extends Controller
             'by_day' => $dailySummary,
             'time_logs' => $timeLogs,
         ]);
+    }
+
+    /**
+     * Export time logs as PDF.
+     */
+    public function exportPdf(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'from_date' => 'required|date',
+            'to_date' => 'required|date|after_or_equal:from_date',
+            'client_id' => 'nullable|exists:clients,id',
+            'project_id' => 'nullable|exists:projects,id',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $query = TimeLog::query()
+            ->whereNotNull('end_time')
+            ->whereBetween('start_time', [$request->from_date, $request->to_date])
+            ->whereHas('project', function ($query) use ($request) {
+                $query->whereHas('client', function ($query) use ($request) {
+                    $query->where('user_id', $request->user()->id);
+
+                    if ($request->has('client_id')) {
+                        $query->where('id', $request->client_id);
+                    }
+                });
+
+                if ($request->has('project_id')) {
+                    $query->where('id', $request->project_id);
+                }
+            })
+            ->with('project.client');
+
+        $timeLogs = $query->get();
+
+        // Calculate totals
+        $totalHours = $timeLogs->sum('hours');
+        $billableHours = $timeLogs->where('is_billable', true)->sum('hours');
+        $nonBillableHours = $timeLogs->where('is_billable', false)->sum('hours');
+
+        // Group by project
+        $projectSummary = $timeLogs->groupBy('project_id')->map(function ($logs, $projectId) {
+            $project = $logs->first()->project;
+            return [
+                'project_id' => $projectId,
+                'project_title' => $project->title,
+                'client_name' => $project->client->name,
+                'total_hours' => $logs->sum('hours'),
+                'billable_hours' => $logs->where('is_billable', true)->sum('hours'),
+                'billable_amount' => $logs->where('is_billable', true)->sum('hours') * $project->hourly_rate,
+            ];
+        })->values()->toArray();
+
+        // Generate PDF
+        $data = [
+            'title' => 'Time Log Report',
+            'from_date' => $request->from_date,
+            'to_date' => $request->to_date,
+            'total_hours' => $totalHours,
+            'billable_hours' => $billableHours,
+            'non_billable_hours' => $nonBillableHours,
+            'projects' => $projectSummary,
+            'time_logs' => $timeLogs,
+            'date' => date('m/d/Y'),
+        ];
+
+        $pdf = Pdf::loadView('pdf.time-logs', $data);
+
+        // Generate a filename with the date range
+        $fileName = 'time-logs-' . str_replace('-', '', $request->from_date) . '-' . str_replace('-', '', $request->to_date) . '.pdf';
+
+        return $pdf->download($fileName);
+    }
+
+    /**
+     * Check if user has exceeded 8 hours in a day and notify if needed.
+     *
+     * @param \App\Models\TimeLog $timeLog
+     * @return void
+     */
+    protected function checkAndNotifyDailyHoursExceeded($timeLog)
+    {
+        $user = request()->user();
+        $date = Carbon::parse($timeLog->start_time)->format('Y-m-d');
+
+        // Calculate total hours for the current day
+        $dailyHours = TimeLog::whereHas('project', function ($query) use ($user) {
+            $query->whereHas('client', function ($query) use ($user) {
+                $query->where('user_id', $user->id);
+            });
+        })
+            ->whereDate('start_time', $date)
+            ->whereNotNull('end_time')
+            ->sum('hours');
+
+        // If hours exceed 8, send notification
+        if ($dailyHours > 8) {
+            $user->notify(new DailyTimeExceededNotification($dailyHours, $date));
+        }
     }
 }
