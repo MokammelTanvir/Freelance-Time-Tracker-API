@@ -3,6 +3,7 @@
 use App\Http\Controllers\Auth\AuthController;
 use App\Http\Controllers\ClientController;
 use App\Http\Controllers\ProjectController;
+use App\Http\Controllers\TimeLogController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -36,4 +37,13 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Get projects by client
     Route::get('/clients/{client}/projects', [ProjectController::class, 'index']);
+
+    // TimeLog Routes
+    Route::apiResource('time-logs', TimeLogController::class);
+    Route::post('/time-logs/start', [TimeLogController::class, 'start']);
+    Route::post('/time-logs/{timeLog}/stop', [TimeLogController::class, 'stop']);
+    Route::get('/projects/{project}/time-logs', [TimeLogController::class, 'index']);
+
+    // Reports
+    Route::get('/reports', [TimeLogController::class, 'report']);
 });
